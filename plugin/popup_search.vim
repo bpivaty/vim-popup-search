@@ -1,3 +1,7 @@
+" plugin/sexy_search.vim
+if exists('g:loaded_sexy_search') | finish | endif
+let g:loaded_sexy_search = 1
+
 " ============================================================================
 " Global Search for Vim 8.2+ (Robust Cross-Platform Literal Search)
 " ============================================================================
