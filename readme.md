@@ -10,7 +10,7 @@
 ## Installation
 Using [vim-plug](https://github.com/junegunn/vim-plug):
 ```vim
-Plug 'your-username/vim-popup-search'
+Plug 'bpivaty/vim-popup-search'
 
 
 Usage
