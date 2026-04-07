@@ -1,27 +1,25 @@
-" plugin/sexy_search.vim
-if exists('g:loaded_sexy_search') | finish | endif
-let g:loaded_sexy_search = 1
-
 " ============================================================================
-" Global Search for Vim 8.2+ (Robust Cross-Platform Literal Search)
+" Global Search for Vim 8.2+ (Sexy, Robust, Cross-Platform)
 " ============================================================================
 
 if v:version < 802
-    echohl ErrorMsg | echo "Popup Search Error: Requires Vim 8.2+" | echohl None
+    echohl ErrorMsg
+    echo "Popup Search Error: This plugin requires Vim 8.2 or newer."
+    echohl None
     finish
 endif
 
-" --- State ---
-let s:search_query = ""
+" --- State Initialization ---
+if !exists('s:search_query') | let s:search_query = "" | endif
 let s:search_winid = -1
 let s:ignore_case = 1
 let s:raw_results = [] 
 let s:search_timer = -1
-let s:cursor_idx = 0 
+let s:cursor_idx = strchars(s:search_query) 
 
 let s:max_width  = get(g:, 'popup_search_width', 110)
 let s:max_height = get(g:, 'popup_search_height', 25)
-let s:path_width = get(g:, 'popup_search_path_width', 45)
+let s:path_width = get(g:, 'popup_search_path_width', 35)
 
 " --- Highlighting Logic ---
 function! s:ApplyHighlights()
@@ -70,9 +68,7 @@ function! s:InitProps()
         \ {'id': 'prop_h_foot',  'hl': 'HelpFooter',          'prio': 80}
     \ ]
     for p in l:props
-        if empty(prop_type_get(p.id)) 
-            call prop_type_add(p.id, {'highlight': p.hl, 'priority': p.prio}) 
-        endif
+        if empty(prop_type_get(p.id)) | call prop_type_add(p.id, {'highlight': p.hl, 'priority': p.prio}) | endif
     endfor
 endfunction
 
@@ -101,10 +97,14 @@ function! s:ShowHelp()
         \ {'text': ' [ Press any key to return to search ] ', 'type': 'prop_h_foot'}
         \ ]
     
-    let l:lines = map(copy(l:content), 'printf("%-70s", v:val.text)')
+    let l:lines = []
+    for l:item in l:content
+        call add(l:lines, printf('%-70s', l:item.text))
+    endfor
+
     let l:help_winid = popup_create(l:lines, {
         \ 'title': ' Help ', 'border': [1,1,1,1], 'pos': 'center', 'padding': [1,4,1,4],
-        \ 'minwidth': 70, 'filter': 'popup_filter_menu', 'zindex': 300, 'highlight': 'ExplorerWin'
+        \ 'minwidth': 70, 'filter': 'popup_filter_menu', 'zindex': 300, 'highlight': 'ExplorerWin',
         \ })
 
     let l:buf = winbufnr(l:help_winid)
@@ -127,7 +127,7 @@ function! s:TriggerSearch()
     let s:search_timer = timer_start(150, function('s:RunSearch'))
 endfunction
 
-function! s:RunSearch(...)
+unction! s:RunSearch(...)
     let s:search_timer = -1
     if strchars(s:search_query) < 3
         let s:raw_results = []
@@ -135,23 +135,37 @@ function! s:RunSearch(...)
         return
     endif
 
-    " Cross-platform null device
     let l:null = has('win32') ? 'nul' : '/dev/null'
-    " shellescape handles quotes correctly for the current shell
+    " Use shellescape to handle spaces and special chars in the query
     let l:q = shellescape(s:search_query)
-    let l:excludes = get(g:, 'popup_search_exclude_dirs', ['.git'])
+    let l:excludes = get(g:, 'popup_search_exclude_dirs', ['.git', 'node_modules', 'obj', 'bin'])
     let l:excl = ""
 
     if executable('rg')
-        for l:d in l:excludes | let l:excl .= printf(' -g "!%s/*"', l:d) | endfor
-        " Note: shellescape adds its own quotes, so we don't wrap %s in quotes here
-        let l:cmd = printf('rg %s -F --vimgrep --smart-case --hidden %s %s .', (s:ignore_case ? "-i" : "--case-sensitive"), l:excl, l:q)
+        for l:d in l:excludes
+            " FIX: Use shellescape for the glob.
+            " On Linux, '!' inside double quotes triggers history expansion.
+            " Wrapping it in single quotes via shellescape() fixes this.
+            let l:excl .= ' -g ' . shellescape('!' . l:d . '/*')
+        endfor
+       
+        " Note: Removed --smart-case when -F is used as they can conflict in some rg versions
+        let l:case = s:ignore_case ? "-i" : "--case-sensitive"
+        let l:cmd = printf('rg %s -F --vimgrep --hidden %s -- %s .', l:case, l:excl, l:q)
     else
-        for l:d in l:excludes | let l:excl .= printf(' --exclude-dir=%s', l:d) | endfor
-        let l:cmd = printf('grep -rIFEn %s %s %s .', (s:ignore_case ? "-i" : ""), l:excl, l:q)
+        for l:d in l:excludes
+            " FIX: shellescape the exclude directory
+            let l:excl .= ' --exclude-dir=' . shellescape(l:d)
+        endfor
+       
+        " FIX: Removed '-E' (Extended Regex).
+        " If -F and -E are both present, the last one wins.
+        " We want -F for literal search.
+        let l:case = s:ignore_case ? "-i" : ""
+        let l:cmd = printf('grep -rIFn %s %s -- %s .', l:case, l:excl, l:q)
     endif
 
-    " Execute and suppress errors (like 'path not found' or 'permission denied')
+    " Execute and suppress stderr
     let s:raw_results = systemlist(l:cmd . ' 2>' . l:null)[:100]
     call s:RefreshDisplay()
 endfunction
@@ -172,26 +186,20 @@ function! s:RefreshDisplay()
         let l:display_results = ["", "  No matches found."]
     else
         for l:line in s:raw_results[:l:max_res_lines-1]
-            " Regex: Path:Line:OptionalCol:Content
-            let l:parts = matchlist(l:line, '\v^(.{-}):(\d+):%(\d+:)?(.*)')
-            
+            let l:parts = matchlist(l:line, '\v^(.{-}):(\d+):(.*)')
             if !empty(l:parts)
                 let l:path = substitute(l:parts[1], '\\', '/', 'g')
                 let l:lnum = l:parts[2]
                 let l:content = trim(l:parts[3], " \t", 1)
-                
-                let l:path_with_line = l:path . ':' . l:lnum
-                let l:path_fmt = (strlen(l:path_with_line) > s:path_width) ? '...' . strpart(l:path_with_line, strlen(l:path_with_line) - (s:path_width - 3)) : printf('%-' . s:path_width . 's', l:path_with_line)
-                
-                let l:spacer = "  "
-                let l:avail = s:max_width - strlen(l:path_fmt . l:spacer)
+                let l:path_fmt = (strlen(l:path) > s:path_width) ? '...' . strpart(l:path, strlen(l:path) - (s:path_width - 3)) : printf('%-' . s:path_width . 's', l:path)
+                let l:line_fmt = printf(' :%-4s: ', l:lnum)
+                let l:avail = s:max_width - strlen(l:path_fmt . l:line_fmt)
                 if strlen(l:content) > l:avail | let l:content = strpart(l:content, 0, l:avail - 3) . "..." | endif
-                
-                call add(l:display_results, l:path_fmt . l:spacer . l:content)
-                call add(l:col_data, {'p_len': strlen(l:path_fmt), 's_len': strlen(l:spacer), 'raw_con': l:content})
+                call add(l:display_results, l:path_fmt . l:line_fmt . l:content)
+                call add(l:col_data, {'p_len': strlen(l:path_fmt), 'l_len': strlen(l:line_fmt), 'raw_con': l:content})
             else
                 call add(l:display_results, strpart(l:line, 0, s:max_width-3))
-                call add(l:col_data, {'p_len': 0, 's_len': 0, 'raw_con': ''})
+                call add(l:col_data, {'p_len': 0, 'l_len': 0, 'raw_con': ''})
             endif
         endfor
     endif
@@ -221,9 +229,9 @@ function! s:RefreshDisplay()
         for l:i in range(len(l:col_data))
             let l:c = l:col_data[l:i]
             if l:c.p_len > 0
-                call prop_add(l:lnum, 1, {'type': 'prop_path_hl', 'length': l:c.p_len, 'bufnr': l:buf})
-                let l:con_start = l:c.p_len + l:c.s_len + 1
+                call prop_add(l:lnum, 1, {'type': 'prop_path_hl', 'length': l:c.p_len + l:c.l_len, 'bufnr': l:buf})
                 let l:line_text = l:display_results[l:i]
+                let l:con_start = l:c.p_len + l:c.l_len + 1
                 let l:con_len = strlen(l:line_text) - l:con_start + 1
                 if l:con_len > 0 | call prop_add(l:lnum, l:con_start, {'type': 'prop_content', 'length': l:con_len, 'bufnr': l:buf}) | endif
                 
@@ -245,38 +253,47 @@ endfunction
 function! s:SearchFilter(id, key)
     if a:key == "\<Esc>"
         call popup_close(a:id, -1)
+        return 1
     elseif a:key == "\<CR>"
         let l:idx = getcurpos(a:id)[1]
         let l:res_idx = l:idx - 3
         if l:res_idx >= 0 && l:res_idx < len(s:raw_results)
             call popup_close(a:id, s:raw_results[l:res_idx])
         endif
+        return 1
     elseif a:key == "?"
         call s:ShowHelp()
+        return 1
     elseif a:key == "\<C-s>"
         let s:ignore_case = !s:ignore_case
         call s:TriggerSearch()
+        return 1
     elseif a:key == "\<Left>"
         let s:cursor_idx = max([0, s:cursor_idx - 1])
         call s:RefreshDisplay()
+        return 1
     elseif a:key == "\<Right>"
         let s:cursor_idx = min([strchars(s:search_query), s:cursor_idx + 1])
         call s:RefreshDisplay()
+        return 1
     elseif a:key == "\<BS>" || a:key == "\<C-h>"
         if s:cursor_idx > 0
             let s:search_query = strcharpart(s:search_query, 0, s:cursor_idx - 1) . strcharpart(s:search_query, s:cursor_idx)
             let s:cursor_idx -= 1
             call s:TriggerSearch()
         endif
+        return 1
     elseif a:key == "\<Del>"
         if s:cursor_idx < strchars(s:search_query)
             let s:search_query = strcharpart(s:search_query, 0, s:cursor_idx) . strcharpart(s:search_query, s:cursor_idx + 1)
             call s:TriggerSearch()
         endif
+        return 1
     elseif a:key == "\<C-u>"
         let s:search_query = ""
         let s:cursor_idx = 0
         call s:TriggerSearch()
+        return 1
     elseif a:key == "\<C-n>" || a:key == "\<C-p>" || a:key == "\<Up>" || a:key == "\<Down>"
         call popup_filter_menu(a:id, a:key)
         let l:cur = getcurpos(a:id)[1]
@@ -285,10 +302,12 @@ function! s:SearchFilter(id, key)
         elseif l:cur > (s:max_height - 2)
             call win_execute(a:id, printf('call cursor(%d, 1)', s:max_height - 2))
         endif
+        return 1
     elseif a:key =~ '^\p$'
         let s:search_query = strcharpart(s:search_query, 0, s:cursor_idx) . a:key . strcharpart(s:search_query, s:cursor_idx)
         let s:cursor_idx += 1
         call s:TriggerSearch()
+        return 1
     endif
     return 1 
 endfunction
@@ -296,11 +315,9 @@ endfunction
 function! s:SearchCallback(id, result)
     let s:search_winid = -1
     if type(a:result) == v:t_string
-        let l:parts = matchlist(a:result, '\v^(.{-}):(\d+):')
+        let l:parts = matchlist(a:result, '\v^(.{-}):(\d+):(.*)')
         if !empty(l:parts)
-            execute 'edit ' . fnameescape(l:parts[1])
-            execute l:parts[2]
-            normal! zz
+            execute 'edit ' . fnameescape(l:parts[1]) | execute l:parts[2] | normal! zz
         endif
     endif
 endfunction
@@ -310,7 +327,7 @@ function! s:OpenGlobalSearch()
     let s:search_winid = popup_create([], {
         \ 'title': ' Global Search ', 'callback': function('s:SearchCallback'), 'filter': function('s:SearchFilter'),
         \ 'border': [1, 1, 1, 1], 'padding': [0, 1, 0, 1], 'minwidth': s:max_width, 'maxwidth': s:max_width,
-        \ 'minheight': s:max_height, 'maxheight': s:max_height, 'cursorline': 1, 'mapping': 0, 'highlight': 'ExplorerWin'
+        \ 'minheight': s:max_height, 'maxheight': s:max_height, 'cursorline': 1, 'mapping': 0, 'highlight': 'ExplorerWin',
         \ })
     let s:cursor_idx = strchars(s:search_query)
     if strchars(s:search_query) >= 3 | call s:RunSearch() | else | call s:RefreshDisplay() | endif
